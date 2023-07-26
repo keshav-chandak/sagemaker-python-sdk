@@ -293,9 +293,9 @@ def test_bias_monitor(sagemaker_session, scheduled_bias_monitor, endpoint_name, 
 )
 @pytest.mark.flaky(reruns=5, reruns_delay=2)
 def test_run_bias_monitor(
-    scheduled_bias_monitor, sagemaker_session, endpoint_name, ground_truth_input, upload_actual_data
+    scheduled_bias_monitor, sagemaker_session, endpoint_name, ground_truth_input, capfd
 ):
-    _verify_execution_status(scheduled_bias_monitor)
+    _verify_execution_status(scheduled_bias_monitor, capfd=capfd)
 
     _verify_bias_job_description(
         sagemaker_session=sagemaker_session,
@@ -408,8 +408,9 @@ def test_run_explainability_monitor(
     endpoint_name,
     ground_truth_input,
     upload_actual_data,
+    capfd,
 ):
-    _verify_execution_status(scheduled_explainability_monitor)
+    _verify_execution_status(scheduled_explainability_monitor, capfd=capfd)
 
     _verify_explainability_job_description(
         sagemaker_session=sagemaker_session,
@@ -514,11 +515,12 @@ def _verify_job_description(
     )
 
 
-def _verify_execution_status(monitor):
+def _verify_execution_status(monitor, capfd):
     _wait_for_completion(monitor)
     executions = monitor.list_executions()
     assert len(executions) > 0
     schedule_desc = monitor.describe_schedule()
+    _check_processing_logs_generated(schedule_description=schedule_desc, capfd=capfd)
     execution_summary = schedule_desc.get("LastMonitoringExecutionSummary")
     last_execution_status = execution_summary["MonitoringExecutionStatus"]
     assert last_execution_status in ["Completed", "CompletedWithViolations"]
@@ -600,3 +602,10 @@ def _wait_for_completion(monitor):
         # End this loop once the execution has reached a terminal state.
         if last_execution_status in ["Completed", "CompletedWithViolations", "Failed", "Stopped"]:
             break
+
+
+def _check_processing_logs_generated(self, schedule_description, capfd):
+    self.get_latest_execution_logs(wait=False)
+    out, _ = capfd.readouterr()
+    assert len(out) > 0
+    assert schedule_description.get("LastMonitoringExecutionSummary")["ProcessingJobArn"] in out

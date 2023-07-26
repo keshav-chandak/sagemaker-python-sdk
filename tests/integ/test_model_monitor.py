@@ -486,6 +486,44 @@ def test_default_monitor_suggest_baseline_and_create_monitoring_schedule_with_cu
     assert len(summary["MonitoringScheduleSummaries"]) > 0
 
 
+def test_default_monitor_display_logs_errors(sagemaker_session, predictor, capfd):
+    my_default_monitor = DefaultModelMonitor(role=ROLE, sagemaker_session=sagemaker_session)
+
+    my_default_monitor.create_monitoring_schedule(
+        endpoint_input=predictor.endpoint_name,
+        schedule_cron_expression=CronExpressionGenerator.hourly(),
+    )
+
+    schedule_description = my_default_monitor.describe_schedule()
+    try:
+        my_default_monitor.get_latest_execution_logs(wait=False)
+    except ValueError as ve:
+        assert "No execution jobs were kicked off." in str(ve)
+
+    for _ in retries(
+        max_retry_count=100,
+        exception_message_prefix="Waiting for the an execution to start",
+        seconds_to_sleep=50,
+    ):
+        schedule_desc = my_default_monitor.describe_schedule()
+        execution_summary = schedule_desc.get("LastMonitoringExecutionSummary")
+        last_execution_status = None
+
+        # Once there is an execution, get its status
+        if execution_summary is not None:
+            last_execution_status = execution_summary["MonitoringExecutionStatus"]
+        # End this loop once the execution has reached a terminal state.
+        if last_execution_status is not None:
+            break
+    try:
+        my_default_monitor.get_latest_execution_logs(wait=False)
+    except ValueError as ve:
+        assert "Processing Job did not run for the last execution" in str(ve)
+
+    my_default_monitor.stop_monitoring_schedule()
+    my_default_monitor.delete_monitoring_schedule()
+
+
 @pytest.mark.skipif(
     tests.integ.test_region() in tests.integ.NO_MODEL_MONITORING_REGIONS,
     reason="ModelMonitoring is not yet supported in this region.",
@@ -1643,6 +1681,7 @@ def test_byoc_monitor_attach_followed_by_baseline_and_update_monitoring_schedule
     output_kms_key,
     updated_volume_kms_key,
     updated_output_kms_key,
+    capfd,
 ):
     baseline_dataset = os.path.join(DATA_DIR, "monitor/baseline_dataset.csv")
 
@@ -1771,6 +1810,10 @@ def test_byoc_monitor_attach_followed_by_baseline_and_update_monitoring_schedule
 
     _wait_for_schedule_changes_to_apply(monitor=my_attached_monitor)
 
+    _check_processing_logs_generated(
+        monitor=my_attached_monitor, schedule_description=schedule_description, capfd=capfd
+    )
+
     my_attached_monitor.stop_monitoring_schedule()
 
     _wait_for_schedule_changes_to_apply(monitor=my_attached_monitor)
@@ -1875,6 +1918,13 @@ def test_default_monitor_monitoring_alerts(sagemaker_session, predictor):
 
     my_default_monitor.stop_monitoring_schedule()
     my_default_monitor.delete_monitoring_schedule()
+
+
+def _check_processing_logs_generated(monitor, schedule_description, capfd):
+    monitor.get_latest_execution_logs(wait=False)
+    out, _ = capfd.readouterr()
+    assert len(out) > 0
+    assert schedule_description.get("LastMonitoringExecutionSummary")["ProcessingJobArn"] in out
 
 
 def _wait_for_schedule_changes_to_apply(monitor):
